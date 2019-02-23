@@ -1,12 +1,16 @@
 # Case-Challenge for https://github.com/Fiddleman/BusinessAnalytics
 # author: Lukas Leist
 
-# load Dataset
-train = read.csv("data/train.csv",
-                 row.names="PassengerId")
+# Load Data
+## Training Data
+train = read.csv("data/train.csv", row.names="PassengerId")
 
-# Clean and describe dataset
-## Convert columns to factors
+## Testing Data
+test = read.csv("./data/test.csv")
+
+
+# Clean and Explore
+## Function for converting columns to factors and feature engineering
 prepare = function(dataset) {
   if("Survived" %in% colnames(dataset)) {
     dataset$Survived = factor(dataset$Survived, labels = c("died", "survived"))  
@@ -21,12 +25,16 @@ prepare = function(dataset) {
   return(dataset)
 }
 
+
+## Explore Datasets
+
 colnames(train)
 train = prepare(train)
 summary(train)
 
+test = prepare(test)
+summary(test)
 
-# Exploration of Data
 sex.table = table(train$Survived, train$Sex)
 summary(sex.table)
 
@@ -39,36 +47,66 @@ summary(Embarked.table)
 Deck.table = table(train$Survived, train$Deck)
 summary(Deck.table)
 
-# Decision tree based Approach
-## Fitting Decision Tree
+# Modelling: Decision Tree Based Approach
 install.packages("party")
 library("party")
-colnames(train)
+
+## Fitting Decision Tree
 predictor = ctree(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Deck, data=train)
 
-# Neuronal Network Approach
-##
-install.packages("keras")
-library(keras)
-install_keras()
-
-train.y = train$Survived
-train.x = train[c("Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked", "Deck")]
-
-
-# Load Test Data
-test = read.csv("./data/test.csv")
-test = prepare(test)
-
-summary(test)
-
-# Predict Results
+## Predicting
 predictions = predict(predictor, test)
-summary(results)
+summary(predictions)
 
+# Export: Decision Tree Based Approach
 result = data.frame(PassengerId = test$PassengerId)
 result$Survived = as.numeric(predictions) - 1
 
 table(result$Survived)
-
 write.csv(result, file = "./result.csv", quote = FALSE, row.names = FALSE)
+
+# Moddeling: Neuronal Network Approach
+##
+install.packages("devtools")
+devtools::install_github("rstudio/keras")
+library(keras)
+install_keras()
+
+
+prepare.y = function(col) {
+  tmp = as.numeric(col) - 1
+  tmp = to_categorical(tmp, length(levels(col)))
+  return(tmp)
+}
+
+prepare.x = function(dataset) {
+  cbind(as.numeric(dataset$Pclass), as.numeric(dataset$Sex), dataset$Age, dataset$SibSp, dataset$Parch, dataset$Fare, as.numeric(dataset$Deck))
+}
+
+train.y = prepare.y(train$Survived)
+train.x = prepare.x(train)
+train.x[is.na(train.x)] = 0
+test.x = prepare.x(test)
+
+model <- keras_model_sequential()
+model %>% 
+  layer_dense(units = 32, activation = 'relu', input_shape = c(7)) %>% 
+  layer_dense(units = 64, activation = 'relu') %>% 
+  layer_dropout(rate = 0.3) %>% 
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 8, activation = 'relu') %>%
+  layer_dense(units = 2, activation = 'softmax')
+
+model %>% compile(
+  loss = 'categorical_crossentropy',
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy')
+)
+
+history <- model %>% fit(
+  train.x, train.y, 
+  epochs = 30
+)
+
+model %>% predict_classes(test.x)
