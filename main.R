@@ -1,16 +1,33 @@
 # Case-Challenge for https://github.com/Fiddleman/BusinessAnalytics
 # author: Lukas Leist
 
+# Install and Import Packages
+## Install
+install.packages("party")
+install.packages("devtools")
+devtools::install_github("rstudio/keras")
+library(keras)
+install_keras()
+
+
+## Import
+library("party")
+library(keras)
+
+
 # Load Data
 ## Training Data
 train = read.csv("data/train.csv", row.names="PassengerId")
 
 ## Testing Data
 test = read.csv("./data/test.csv")
+table(is.na(train$Embarked))
+colnames(train)
 
 
 # Clean and Explore
 ## Function for converting columns to factors and feature engineering
+## Missing Values for Age, Deck and Embarked get Estimated
 prepare = function(dataset) {
   if("Survived" %in% colnames(dataset)) {
     dataset$Survived = factor(dataset$Survived, labels = c("died", "survived"))  
@@ -19,14 +36,40 @@ prepare = function(dataset) {
   dataset$Sex = factor(dataset$Sex, levels = c("female", "male"))
   dataset$Embarked = factor(dataset$Embarked, levels = c("C", "Q", "S"), labels = c("Cherbourg", "Queenstown", "Southhampton"))
   
-  #Extract Deck from starting letter of cabin
+  #Extract Deck from starting letter of cabin and estimate missing
+  
   dataset$Deck = factor(substr(dataset$Cabin, 1,1), levels = c("A", "B", "C", "D", "E", "F", "G", "T"))
+  #print(summary(dataset$Deck))
+  if("Deck" %in% colnames(train)) {
+    deck.tree = ctree(Deck ~ Fare + Pclass + Embarked, data = train[!is.na(dataset$Deck),])
+  }
+  else {
+    deck.tree = ctree(Deck ~ Fare + Pclass + Embarked, data = dataset[!is.na(dataset$Deck),])
+  }
+  dataset[is.na(dataset$Deck),]$Deck = predict(deck.tree, dataset[is.na(dataset$Deck),])
+  #print(summary(dataset$Deck))
+  
   dataset$Family.Members = dataset$Parch + dataset$SibSp
+  
+  estimator.age = lm(Age ~ Parch + SibSp, data=train)
+  #print("Age estimation:")
+  #print(summary(dataset$Age))
+  estimations = predict(estimator.age, dataset[is.na(dataset$Age),])
+  estimations[estimations < 0] = 0
+  dataset[is.na(dataset$Age),]$Age = estimations
+  #print(summary(dataset$Age))
+  
+  if(TRUE %in% is.na(dataset$Embarked)) {
+    dataset[is.na(dataset$Embarked), "Embarked"] = "Southhampton"
+  }
+  
+  if(TRUE %in% is.na(dataset$Fare)) {
+    dataset[is.na(dataset$Fare), "Fare"] = median(train[!is.na(train$Fare), "Fare"])
+  }
+  
   return(dataset)
 }
 
-
-## Explore Datasets
 
 colnames(train)
 train = prepare(train)
@@ -34,6 +77,8 @@ summary(train)
 
 test = prepare(test)
 summary(test)
+
+## Explore Datasets
 
 sex.table = table(train$Survived, train$Sex)
 summary(sex.table)
@@ -48,29 +93,17 @@ Deck.table = table(train$Survived, train$Deck)
 summary(Deck.table)
 
 # Modelling: Decision Tree Based Approach
-install.packages("party")
-library("party")
 
 ## Fitting Decision Tree
-predictor = ctree(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Deck, data=train)
+predictor = ctree(Survived ~ Pclass + Sex + Age + Family.Members + Fare + Embarked + Deck, data=train)
+
+predictor
 
 ## Predicting
 predictions = predict(predictor, test)
 summary(predictions)
 
-# Export: Decision Tree Based Approach
-result = data.frame(PassengerId = test$PassengerId)
-result$Survived = as.numeric(predictions) - 1
-
-table(result$Survived)
-write.csv(result, file = "./result.csv", quote = FALSE, row.names = FALSE)
-
 # Moddeling: Neuronal Network Approach
-##
-install.packages("devtools")
-devtools::install_github("rstudio/keras")
-library(keras)
-install_keras()
 
 
 prepare.y = function(col) {
@@ -79,23 +112,37 @@ prepare.y = function(col) {
   return(tmp)
 }
 
+
 prepare.x = function(dataset) {
-  cbind(as.numeric(dataset$Pclass), as.numeric(dataset$Sex), dataset$Age, dataset$SibSp, dataset$Parch, dataset$Fare, as.numeric(dataset$Deck))
+  cbind(
+    prepare.y(dataset$Pclass),
+    prepare.y(dataset$Sex),
+    dataset$Age,
+    dataset$SibSp,
+    dataset$Parch,
+    dataset$Fare,
+    prepare.y(dataset$Deck),
+    prepare.y(dataset$Embarked)
+  )
 }
+
+summary(train$Deck)
 
 train.y = prepare.y(train$Survived)
 train.x = prepare.x(train)
-train.x[is.na(train.x)] = 0
 test.x = prepare.x(test)
+
 
 model <- keras_model_sequential()
 model %>% 
-  layer_dense(units = 32, activation = 'relu', input_shape = c(7)) %>% 
+  layer_dense(units = 32, activation = 'relu', input_shape = c(20)) %>% 
   layer_dense(units = 64, activation = 'relu') %>% 
   layer_dropout(rate = 0.3) %>% 
-  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dense(units = 64, activation = 'relu') %>%
   layer_dropout(rate = 0.2) %>%
-  layer_dense(units = 8, activation = 'relu') %>%
+  layer_dense(units = 32, activation = 'relu') %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 16, activation = 'relu') %>%
   layer_dense(units = 2, activation = 'softmax')
 
 model %>% compile(
@@ -106,7 +153,16 @@ model %>% compile(
 
 history <- model %>% fit(
   train.x, train.y, 
-  epochs = 30
+  epochs = 4000
 )
 
-model %>% predict_classes(test.x)
+predictions = model %>% predict_classes(test.x)
+predictions = factor(predictions + 1, labels = c("died", "survived"))
+summary(as.factor(predictions))
+
+# Export
+result = data.frame(PassengerId = test$PassengerId)
+result$Survived = as.numeric(predictions) - 1
+
+table(result$Survived)
+write.csv(result, file = "./results/result.csv", quote = FALSE, row.names = FALSE)
